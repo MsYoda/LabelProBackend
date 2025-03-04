@@ -1,9 +1,11 @@
-import uuid
 from django.db import models
 
 class Dataset(models.Model):
     name = models.CharField(max_length=255)
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
+    folder_path = models.TextField(default='')
+    min_labels_for_file = models.IntegerField(default=1)
+    data_key = models.CharField(default='', max_length=255)
 
     def __str__(self):
         return str(self.name)
@@ -14,7 +16,7 @@ class Dataset(models.Model):
 
 class Tag(models.Model):
     name = models.CharField(max_length=50, blank=False)
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
     class_id = models.IntegerField()
     dataset = models.ForeignKey(Dataset, related_name='tags', on_delete=models.CASCADE)
 
