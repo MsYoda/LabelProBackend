@@ -10,26 +10,25 @@ db = client['label_pro']
 collection = db['labels']
 
 label_entries = collection.find()
-file_path = '/Users/user/python/label_pro/datasets/hello_bro/20.png'
+# file_path = '/Users/user/python/label_pro/datasets/hello_bro/20.png'
 
 
-strategy = AssetReader.get_data_reader('./test.svg')
-labels_creater : AssetReader = AssetReader(strategy)
-r = labels_creater.read('./test.svg', id_in_file=3, data_key='name')
-print(r)
-# for v in label_entries:
-#     print(v)
+# strategy = AssetReader.get_data_reader('./test.svg')
+# labels_creater : AssetReader = AssetReader(strategy)
+# r = labels_creater.read('./test.svg', id_in_file=3, data_key='name')
+# print(r)
+for v in label_entries:
+    print(v)
 
 
-# collection.update_one({'dataset_id': 1, 'file_path': file_path}, {'$set': asdict(LabelEntry(dataset_id=1, file_path=file_path, file_part=1 ,labels=[]))})
 
-# collection.delete_many({})
+#collection.delete_many({})
 
-# for v in label_entries:
-#     v:dict
-#     print(v)
-#     v.pop('_id')
-#     print(LabelEntry(**v))
+for v in label_entries:
+    v:dict
+    print(v)
+    v.pop('_id')
+    print(LabelEntry(**v))
 
-# client.close()
-# print('finish')
+client.close()
+print('finish')

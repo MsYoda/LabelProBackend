@@ -26,7 +26,15 @@ class LabelsMongoDatasource:
             label_entries.append(LabelEntry.from_dict(e))
         return label_entries
     
+    def get_label_entry(self, dataset_id, file_path, id_in_file):
+        result = self.collection.find_one({'dataset_id': dataset_id, 'file_path': file_path, 'id_in_file': str(id_in_file)})
+        print(result)
+        result : dict
+        print(result)
+        return LabelEntry.from_dict(result)
+
+    
     def update_label_entry(self, label_entry: LabelEntry):
-        self.collection.update_one({'dataset_id': label_entry.dataset_id, 'file_path': label_entry.file_path}, {'$set': asdict(label_entry)})
+        self.collection.update_one({'dataset_id': label_entry.dataset_id, 'file_path': label_entry.file_path, 'id_in_file': str(label_entry.id_in_file)}, {'$set': asdict(label_entry)})
 
 

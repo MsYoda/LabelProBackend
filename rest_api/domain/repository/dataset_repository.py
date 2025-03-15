@@ -15,3 +15,11 @@ class DatasetRepository(ABC):
     @abstractmethod
     def get_new_task(self, dataset_id: int, user_id: int):
         pass
+
+    @abstractmethod
+    def submit_task(self, id_in_file: int, dataset_id: int, user_id: int, file_path: str, data: dict):
+        pass
+
+    @abstractmethod
+    def get_dataet_by_id(self, dataset_id: int):
+        pass
