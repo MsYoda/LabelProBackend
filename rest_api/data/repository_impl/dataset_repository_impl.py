@@ -1,6 +1,9 @@
 
+
 import random
 from typing import BinaryIO
+
+from django.http import Http404
 from rest_api.domain.models.label_entry import Label, LabelEntry
 from rest_api.data.datasource.labels_mongo_source import LabelsMongoDatasource
 from rest_api.data.datasource.dataset_db_source import DatasetDBSource
@@ -42,6 +45,9 @@ class DatasetRepositoryImpl(DatasetRepository):
                     break
             if not user_tagged:
                 filtered_entries.append(label_entry)
+                
+        if len(filtered_entries) == 0:
+            raise Http404()
         
         result_entry : LabelEntry = random.choice(filtered_entries)
         labels = result_entry.labels
@@ -54,7 +60,6 @@ class DatasetRepositoryImpl(DatasetRepository):
     
     def submit_task(self, id_in_file: int, dataset_id: int, user_id: int, file_path: str, data: dict):
         label_entry : LabelEntry = self.labels_mongo_source.get_label_entry(id_in_file=id_in_file, dataset_id=dataset_id, file_path=file_path)
-        print(label_entry)
         for i, _ in enumerate(label_entry.labels):
             label : Label = label_entry.labels[i]
             if label.status == 'pending' and label.user_id == user_id:

@@ -18,7 +18,7 @@ class LabelsMongoDatasource:
 
     def find_dataset_labels(self, dataset_id: int):
         dataset_id = int(dataset_id)
-        label_entries_db = self.collection.find({'dataset_id': dataset_id})
+        label_entries_db = self.collection.find({'dataset_id': int(dataset_id)})
 
         label_entries = []
         for e in label_entries_db:
@@ -27,8 +27,10 @@ class LabelsMongoDatasource:
         return label_entries
     
     def get_label_entry(self, dataset_id, file_path, id_in_file):
-        result = self.collection.find_one({'dataset_id': dataset_id, 'file_path': file_path, 'id_in_file': str(id_in_file)})
-        print(result)
+        result = self.collection.find_one({'dataset_id': int(dataset_id), 'file_path': file_path, 'id_in_file': str(id_in_file)})
+        print(dataset_id)
+        print(file_path)
+        print(id_in_file)
         result : dict
         print(result)
         return LabelEntry.from_dict(result)

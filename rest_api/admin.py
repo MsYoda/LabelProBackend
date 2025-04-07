@@ -21,6 +21,7 @@ class TagInline(admin.TabularInline):
     fields = ['name']
     show_change_link = True
     actions = ['delete_selected']
+    extra = 0
 
 
 class DatasetAdmin(admin.ModelAdmin):
@@ -39,7 +40,11 @@ class DatasetAdmin(admin.ModelAdmin):
 
     fieldsets = (
         (None, {
-            'fields': ('name', 'min_labels_for_file', 'data_key', 'files', )
+            'fields': ('name', 'min_labels_for_file', 'data_key', 'files',)
+        }),
+        ('Labeling configuration', {
+            'fields': ('type', 'input_type', 'data_type'),
+            'classes': ('collapse',),
         }),
         ('Dataset Info', {
             'fields': ('files_count',),

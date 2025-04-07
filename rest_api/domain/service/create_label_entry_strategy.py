@@ -38,7 +38,7 @@ class CreateFromTXT(CreateLabelEntryStrategy):
     
 class CreateFromFile(CreateLabelEntryStrategy):
     def get_entries(self, file_path: str) -> list[LabelEntry]:
-        return [LabelEntry(id_in_file='', dataset_id=1, file_path=file_path, labels=[])]
+        return [LabelEntry(id_in_file='none', dataset_id=1, file_path=file_path, labels=[])]
 
 class LabelsCreater:
     def __init__(self, strategy: CreateLabelEntryStrategy):

@@ -18,13 +18,18 @@ class LabelsController(APIView):
         
         return JsonResponse({'data': asset_reader.read(label_entry.file_path, 
                                                        id_in_file=label_entry.id_in_file, 
-                                                       data_key=dataset.data_key), 'metadata': ''})
+                                                       data_key=dataset.data_key), 
+                            'type': dataset.type,
+                            'filename': label_entry.file_path,
+                            'idInFile': label_entry.id_in_file,
+                            'metadata': {}})
     def post(self, request):
         id_in_file= request.data.get('id_in_file')
         file_path = request.data.get('file_path')
         dataset_id = request.data.get('dataset_id')
         data = request.data.get('data')
-        user_id = request.data.get('user_id')
+        user_id = request.data.get('user_id', 1)
+        print(data)
         self.dataset_repository.submit_task(id_in_file=id_in_file,
                                             user_id=user_id,
                                             file_path=file_path,

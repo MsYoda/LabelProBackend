@@ -1,11 +1,51 @@
 from django.db import models
 
+class TaggingTaskType(models.TextChoices):
+    bounding_box = 'bounding_box', 
+    polygons = 'polygons',
+    word_tagging = 'word_tagging',
+    custom = 'custom',
+
+
+class CustomInputType(models.TextChoices):
+    text = 'text',
+    one_from_many = 'one_from_many',
+    many_from_many = 'many_from_many'
+
+class CustomDataType(models.TextChoices):
+    sound = 'sound',
+    image = 'image',
+    string = 'string'
+
+
 class Dataset(models.Model):
     name = models.CharField(max_length=255)
     id = models.AutoField(primary_key=True, editable=False)
     folder_path = models.TextField(default='')
     min_labels_for_file = models.IntegerField(default=1)
-    data_key = models.CharField(default='', max_length=255)
+    data_key = models.CharField(default='', max_length=255, blank=True)
+
+    type = models.CharField(
+        max_length=50,
+        choices=TaggingTaskType.choices,
+        default=TaggingTaskType.choices[0]
+    )
+
+    input_type = models.CharField(
+        max_length=50,
+        choices=CustomInputType.choices,
+        default='',
+        blank=True,
+        null=True,
+    )
+
+    data_type = models.CharField(
+        max_length=50,
+        choices=CustomDataType.choices,
+        default='',
+        blank=True,
+        null=True,
+    )
 
     def __str__(self):
         return str(self.name)
