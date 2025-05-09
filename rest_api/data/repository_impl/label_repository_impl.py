@@ -12,8 +12,6 @@ class LabelRepositoryImpl(LabelRepository):
 
     def init_dataset_labels(self, dataset_id: int, file_paths: list[str]):
         labels = []
-        print('paths')
-        print(file_paths)
         for file in file_paths:
             strategy = get_data_reader(file)
             labels_creater : LabelsCreater = LabelsCreater(strategy)

@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.contrib import messages
 
 from rest_api.domain.repository.label_repository import LabelRepository
 from rest_api.di.service_locator import ServiceLocator
@@ -24,12 +25,20 @@ class TagInline(admin.TabularInline):
     extra = 0
 
 
+@admin.action(description='Export dataset')
+def custom_action(modeladmin, request, queryset):
+    for obj in queryset:
+        pass
+    messages.success(request, "Действие выполнено!")
+
 class DatasetAdmin(admin.ModelAdmin):
+    change_form_template = "dataset_change_form.html"
     form = DatasetAdminForm
     list_display = ('name',)
-    readonly_fields = ('files_count',)
+    readonly_fields = ('files_count', 'id')
     search_fields = ['name'] 
     inlines = [TagInline]
+    actions = [custom_action]
 
     def files_count(self, obj):
         dataset_repo: DatasetRepository = ServiceLocator.get(DatasetRepository)
@@ -40,14 +49,14 @@ class DatasetAdmin(admin.ModelAdmin):
 
     fieldsets = (
         (None, {
-            'fields': ('name', 'min_labels_for_file', 'data_key', 'files',)
+            'fields': ('name', 'folder_path', 'min_labels_for_file','helper_text', 'data_key', 'files',)
         }),
         ('Labeling configuration', {
             'fields': ('type', 'input_type', 'data_type'),
             'classes': ('collapse',),
         }),
         ('Dataset Info', {
-            'fields': ('files_count',),
+            'fields': ('id', 'files_count',),
         }),
     )
 

@@ -9,7 +9,7 @@ client = pymongo.MongoClient('mongodb://127.0.0.1:27017')
 db = client['label_pro']
 collection = db['labels']
 
-label_entries = collection.find()
+label_entries = collection.find({'dataset_id': 2})
 # file_path = '/Users/user/python/label_pro/datasets/hello_bro/20.png'
 
 

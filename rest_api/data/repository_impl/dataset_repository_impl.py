@@ -37,8 +37,7 @@ class DatasetRepositoryImpl(DatasetRepository):
         for label_entry in label_entries:
             user_tagged = False
             for label in label_entry.labels:
-                print(label_entry.file_path)
-                if label.status == 'pending':
+                if label.status == 'pending' and label.user_id == user_id:
                     return label_entry
                 if label.user_id == user_id:
                     user_tagged = True

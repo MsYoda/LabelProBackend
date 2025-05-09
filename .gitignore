@@ -1,4 +1,6 @@
 **.sqlite3
 **.pyc
 myenv/
+venv/
 .DS_STORE
+local_data/

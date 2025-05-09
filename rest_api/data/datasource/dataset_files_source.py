@@ -3,11 +3,18 @@ import zipfile
 import shutil
 from typing import BinaryIO
 
+def _resolveBasePath():
+    RUN_ENV = os.getenv('RUN_ENV', 'local')
+    if RUN_ENV == 'docker':
+        return '/app/local_data/'
+    else:
+        return "/Users/user/python/label_pro/datasets/"
 
 class DatasetFilesDatasource():
-    _basePath = "/Users/user/python/label_pro/datasets/"
+    _basePath = _resolveBasePath()
 
     def create_dataset_files(self, file: BinaryIO, dataset_name: str, folder: str) -> tuple[str, list[str]]:
+        print(self._basePath, flush=True)
         dataset_name = dataset_name.lower().replace(" ", "_")
         if folder is not None and len(folder) > 0:
             base_folder = folder
@@ -33,7 +40,8 @@ class DatasetFilesDatasource():
                     extracted_path = os.path.join(base_folder, zip_file)
                     if os.path.isdir(extracted_path):
                         continue
-                    final_path = os.path.join(base_folder, os.path.basename(zip_file))
+                    filename = os.path.basename(zip_file).replace(" ", "_")
+                    final_path = os.path.join(base_folder, filename)
                     os.rename(extracted_path, final_path)
         else:
             raise TypeError('Provide correct zip arcive please')
@@ -50,6 +58,7 @@ class DatasetFilesDatasource():
                 dir_path = os.path.join(root, directory)
                 if not os.listdir(dir_path):
                     shutil.rmtree(dir_path)
+        print(file_paths)
 
         return base_folder, file_paths
 

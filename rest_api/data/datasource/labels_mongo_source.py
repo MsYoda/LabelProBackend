@@ -1,11 +1,15 @@
 from dataclasses import asdict
+import os
 from pymongo import MongoClient
 
 from rest_api.domain.models.label_entry import LabelEntry
 
+mongo_host = os.getenv("MONGO_HOST", "localhost")
+mongo_port = int(os.getenv("MONGO_PORT", 27017))
+
 class LabelsMongoDatasource:
     def __init__(self):
-        self.client = MongoClient('mongodb://127.0.0.1:27017')
+        self.client = MongoClient(f"mongodb://{mongo_host}:{mongo_port}")
         self.db = self.client['label_pro']
         self.collection = self.db['labels']
     
@@ -28,11 +32,7 @@ class LabelsMongoDatasource:
     
     def get_label_entry(self, dataset_id, file_path, id_in_file):
         result = self.collection.find_one({'dataset_id': int(dataset_id), 'file_path': file_path, 'id_in_file': str(id_in_file)})
-        print(dataset_id)
-        print(file_path)
-        print(id_in_file)
         result : dict
-        print(result)
         return LabelEntry.from_dict(result)
 
     

@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    container_name: label_pro_back
+    command: gunicorn label_pro.wsgi:application --bind 0.0.0.0:8000
+    volumes:
+      - ./local_data:/app/local_data
+    ports:
+      - "8000:8000"
+    environment:
+      - RUN_ENV=docker
+      - MONGO_HOST=mongo
+      - MONGO_PORT=27017
+    depends_on:
+      - migrations
+      - mongo
+
+  migrations:
+    build: .
+    command: python manage.py migrate
+    volumes:
+      - ./local_data:/app/local_data
+    environment:
+      - RUN_ENV=docker
+      - MONGO_HOST=mongo
+      - MONGO_PORT=27017
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:6
+    container_name: mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./local_data/mongo_db:/data/db
