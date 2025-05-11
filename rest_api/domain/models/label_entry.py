@@ -1,15 +1,20 @@
+import json
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import List, Dict
 
 @dataclass
-class Label():
+class Label:
     user_id: int
     status: str
-    data: Dict
+    data: dict
+
+    def __post_init__(self):
+        if isinstance(self.data, str):
+            self.data = json.loads(self.data)
 
 @dataclass
-class LabelEntry():
-    dataset_id : int
+class LabelEntry:
+    dataset_id: int
     file_path: str
     id_in_file: str
     labels: List[Label]
@@ -22,6 +27,6 @@ class LabelEntry():
             file_path=data['file_path'],
             id_in_file=data['id_in_file'],
             labels=labels
-          
         )
+          
     

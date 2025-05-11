@@ -18,7 +18,7 @@ class LabelsController(APIView):
         user = request.user
         print(user.id)
         label_entry : LabelEntry = self.dataset_repository.get_new_task(dataset_id=dataset_id, user_id=user.id)
-        dataset : Dataset = self.dataset_repository.get_dataet_by_id(dataset_id)
+        dataset : Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
         asset_reader : AssetReader = AssetReader(AssetReader.get_data_reader(label_entry.file_path))
 
         metadata = {}

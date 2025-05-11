@@ -33,8 +33,11 @@ RUN python manage.py collectstatic --noinput
 
 RUN mkdir -p /app/local_data/
 
+RUN chmod +x /app/docker_entrypoint.sh
+
 # Открываем порт
 EXPOSE 8000
 
+ENTRYPOINT ["/app/docker_entrypoint.sh"]
 # Запуск Gunicorn
 CMD ["gunicorn", "label_pro.wsgi:application", "--bind", "0.0.0.0:8000"]

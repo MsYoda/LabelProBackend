@@ -3,4 +3,5 @@
 myenv/
 venv/
 .DS_STORE
-local_data/
+local_data/datasets/
+local_data/mongo_db/

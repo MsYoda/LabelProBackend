@@ -46,8 +46,6 @@ class AssetReader:
     @staticmethod
     def get_data_reader(file_name: str) -> ReadAssetStrategy:
         extension = file_name.split('.')[-1]
-        print(extension)
-        print(file_name)
         if extension == 'csv':
             return CSVDataReader()
         elif extension == 'jsonl':

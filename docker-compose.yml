@@ -13,6 +13,9 @@ services:
       - RUN_ENV=docker
       - MONGO_HOST=mongo
       - MONGO_PORT=27017
+      - DJANGO_SUPERUSER_USERNAME=admin
+      - DJANGO_SUPERUSER_PASSWORD=admin_password
+      - DJANGO_SUPERUSER_EMAIL=django_admin@django.com
     depends_on:
       - migrations
       - mongo
@@ -23,9 +26,12 @@ services:
     volumes:
       - ./local_data:/app/local_data
     environment:
-      - RUN_ENV=docker
+      - RUN_ENV=migrations
       - MONGO_HOST=mongo
       - MONGO_PORT=27017
+      - DJANGO_SUPERUSER_USERNAME=admin
+      - DJANGO_SUPERUSER_PASSWORD=admin_password
+      - DJANGO_SUPERUSER_EMAIL=django_admin@django.com
     depends_on:
       - mongo
 

@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -15,6 +15,7 @@ from rest_api.controller.labels_controller import LabelsController
 
 
 urlpatterns = [
+    path("admin/action-forms/", include("django_admin_action_forms.urls")),
     path('admin/', admin.site.urls),
     path('api/task/', LabelsController.as_view()),
     path('api/file/', FilesController.as_view()),

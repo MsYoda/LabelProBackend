@@ -23,8 +23,11 @@ class DatasetRepositoryImpl(DatasetRepository):
     def get_files_count(self, dataset: Dataset) -> int:
         return self.files_source.get_files_count(folder=dataset.folder_path)
     
-    def get_dataet_by_id(self, dataset_id: int):
+    def get_dataset_by_id(self, dataset_id: int):
         return self.dataset_db_source.get_by_id(dataset_id)
+    
+    def get_dataset_labels(self, dataset_id: int) -> list[LabelEntry]:
+        return self.labels_mongo_source.find_dataset_labels(dataset_id)
     
     def get_new_task(self, dataset_id: int, user_id: int):
         dataset = self.dataset_db_source.get_by_id(dataset_id)

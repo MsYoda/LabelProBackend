@@ -2,10 +2,15 @@ from abc import ABC, abstractmethod
 from typing import BinaryIO
 
 from rest_api.domain.models.dataset import Dataset
+from rest_api.domain.models.label_entry import LabelEntry
 
 class DatasetRepository(ABC):
     @abstractmethod
     def create_dataset_files(self, file: BinaryIO, dataset_name: str, folder: str) -> tuple[str, list[str]]:
+        pass
+
+    @abstractmethod
+    def get_dataset_labels(self, dataset_id: int) -> list[LabelEntry]:
         pass
 
     @abstractmethod
@@ -21,5 +26,5 @@ class DatasetRepository(ABC):
         pass
 
     @abstractmethod
-    def get_dataet_by_id(self, dataset_id: int):
+    def get_dataset_by_id(self, dataset_id: int):
         pass

@@ -1,10 +1,16 @@
+import os
+from django import forms
+from django.conf import settings
 from django.contrib import admin
 from django.contrib import messages
+from django.http import FileResponse, HttpResponse
+from django_admin_action_forms import AdminActionFormsMixin, AdminActionForm, action_with_form
 
 from rest_api.domain.repository.label_repository import LabelRepository
 from rest_api.di.service_locator import ServiceLocator
 from rest_api.domain.repository.dataset_repository import DatasetRepository
-from rest_api.forms import DatasetAdminForm
+from rest_api.domain.service.export_dataset_strategy import ExportProcessor
+from rest_api.forms import DatasetAdminForm, ExportDatasetForm
 
 from .domain.models.dataset import Dataset, Tag
 
@@ -24,21 +30,43 @@ class TagInline(admin.TabularInline):
     actions = ['delete_selected']
     extra = 0
 
+@action_with_form(
+    ExportDatasetForm,
+    description="Export dataset",
+)
+def export_action(self, request, queryset, data):
+    format = data['format']
+    include_source_files = data['include_source_files'] == 'yes'
 
-@admin.action(description='Export dataset')
-def custom_action(modeladmin, request, queryset):
-    for obj in queryset:
-        pass
-    messages.success(request, "Действие выполнено!")
+    if len(queryset) > 1:
+        messages.error(request, 'You cant use this action with more than one dataset')
+        return
+    
+    obj: Dataset = queryset.first()
 
-class DatasetAdmin(admin.ModelAdmin):
+    archive_path = ExportProcessor(ExportProcessor.get_exporter(format)).export_dataset(obj.pk, include_source_files)
+
+    stream_file = open(archive_path, 'rb')
+    original_close = stream_file.close
+
+    def new_close():
+        original_close()
+        os.remove(stream_file.name)
+
+    stream_file.close = new_close
+
+    return FileResponse(stream_file, as_attachment=True)
+
+
+class DatasetAdmin(AdminActionFormsMixin, admin.ModelAdmin):
     change_form_template = "dataset_change_form.html"
     form = DatasetAdminForm
     list_display = ('name',)
     readonly_fields = ('files_count', 'id')
     search_fields = ['name'] 
     inlines = [TagInline]
-    actions = [custom_action]
+    actions = [export_action]
+
 
     def files_count(self, obj):
         dataset_repo: DatasetRepository = ServiceLocator.get(DatasetRepository)
@@ -46,6 +74,7 @@ class DatasetAdmin(admin.ModelAdmin):
         return dataset_repo.get_files_count(obj)
     
     files_count.short_description = 'Files count'
+
 
     fieldsets = (
         (None, {
