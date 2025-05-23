@@ -21,7 +21,7 @@ class CustomDataType(models.TextChoices):
 class Dataset(models.Model):
     name = models.CharField(max_length=255)
     id = models.AutoField(primary_key=True, editable=False)
-    folder_path = models.CharField(default='', max_length=1024)
+    folder_path = models.CharField(default='', max_length=1024, blank=True)
     min_labels_for_file = models.IntegerField(default=1)
     data_key = models.CharField(default='', max_length=255, blank=True)
     helper_text = models.CharField(default='', blank=True)

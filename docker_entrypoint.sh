@@ -2,6 +2,7 @@
 
 echo "🔐 Проверка суперпользователя..."
 if [ "$RUN_ENV" = "migrations" ]; then
+    python manage.py migrate
     echo "🔐 Проверка суперпользователя..."
     python manage.py shell << EOF
 from django.contrib.auth import get_user_model

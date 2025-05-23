@@ -6,7 +6,7 @@ from typing import BinaryIO
 def _resolveBasePath():
     RUN_ENV = os.getenv('RUN_ENV', 'local')
     if RUN_ENV == 'docker':
-        return '/app/local_data/'
+        return '/app/local_data/datasets/'
     else:
         return "/Users/user/python/label_pro/datasets/"
 

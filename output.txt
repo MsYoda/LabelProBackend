@@ -1,0 +1,1643 @@
+# models.py
+from .domain.models.dataset import Dataset, Tag
+
+
+# __init__.py
+
+
+# apps.py
+from django.apps import AppConfig
+
+
+
+class RestApiConfig(AppConfig):
+  default_auto_field = 'django.db.models.BigAutoField'
+  name = 'rest_api'
+
+  def ready(self):
+    from .data.datasource.dataset_files_source import DatasetFilesDatasource
+    from .data.datasource.labels_mongo_source import LabelsMongoDatasource
+    from .data.datasource.dataset_db_source import DatasetDBSource
+    from .domain.repository.dataset_repository import DatasetRepository
+    from .domain.repository.label_repository import LabelRepository
+    from .data.repository_impl.dataset_repository_impl import DatasetRepositoryImpl
+    from .di.service_locator import ServiceLocator
+    from .data.repository_impl.label_repository_impl import LabelRepositoryImpl
+ 
+    
+    ServiceLocator.register(DatasetFilesDatasource, DatasetFilesDatasource())
+    ServiceLocator.register(LabelsMongoDatasource, LabelsMongoDatasource())
+    ServiceLocator.register(DatasetDBSource, DatasetDBSource())
+
+    ServiceLocator.register(DatasetRepository, DatasetRepositoryImpl(
+      files_source=ServiceLocator.get(
+        DatasetFilesDatasource
+      ),
+      dataset_db_source=ServiceLocator.get(DatasetDBSource),
+      labels_mongo_source=ServiceLocator.get(LabelsMongoDatasource),
+        )
+      )
+    ServiceLocator.register(LabelRepository, LabelRepositoryImpl(
+      mongo_source=ServiceLocator.get(
+        LabelsMongoDatasource
+      )))
+  
+
+
+# forms.py
+from django import forms
+from django.core.validators import FileExtensionValidator
+from django_admin_action_forms import AdminActionFormsMixin, AdminActionForm, action_with_form
+
+from rest_api.domain.models.dataset import TaggingTaskType
+
+from .models import Dataset
+
+
+class DatasetAdminForm(forms.ModelForm):
+  files = forms.FileField(
+    label="Replace files with .zip",
+    required=False,
+    validators=[FileExtensionValidator(allowed_extensions=['zip'], message='Use .zip')],
+    widget=forms.FileInput(),
+  )
+
+  class Meta:
+    model = Dataset
+    fields = '__all__'
+
+
+class ExportDatasetForm(AdminActionForm):
+  FORMAT_CHOICES = [
+    ('yolo', 'YOLO'),
+    ('jsonl', 'JSONL'),
+    ('pascalvoc', 'PascalVOC'),
+    ('coco', 'COCO'),
+  ]
+  INCLUDE_SOURCE_CHOISES = [
+    ('yes', 'Yes'),
+    ('no', 'No'),
+  ]
+
+  format = forms.ChoiceField(
+    choices=FORMAT_CHOICES,
+    label="Export format",
+    required=True
+  )
+
+  include_source_files= forms.ChoiceField(
+    choices=INCLUDE_SOURCE_CHOISES,
+    label="Include source files",
+    required=True,
+    initial='no',
+  )
+
+  class Meta:
+    list_objects = True
+    help_text = "Are you sure that you want to export dataset?"
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    dataset : Dataset = self.queryset.first()
+    if dataset.type == TaggingTaskType.bounding_box:   
+      self.fields['format'].choices = self.FORMAT_CHOICES
+    elif dataset.type == TaggingTaskType.polygons:
+      self.fields['format'].choices = [ ('coco', 'COCO'), ('jsonl', 'JSONL'),]
+    else:
+      self.fields['format'].choices = [ ('jsonl', 'JSONL'),]
+
+# admin.py
+import os
+from django import forms
+from django.conf import settings
+from django.contrib import admin
+from django.contrib import messages
+from django.http import FileResponse, HttpResponse
+from django_admin_action_forms import AdminActionFormsMixin, AdminActionForm, action_with_form
+
+from rest_api.domain.repository.label_repository import LabelRepository
+from rest_api.di.service_locator import ServiceLocator
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+from rest_api.domain.service.export_dataset_strategy import ExportProcessor
+from rest_api.forms import DatasetAdminForm, ExportDatasetForm
+
+from .domain.models.dataset import Dataset, Tag
+
+
+class TagAdmin(admin.ModelAdmin):
+  list_display = ('name', 'class_id', 'dataset') 
+  search_fields = ['name']
+  list_filter = ('dataset',)
+
+  readonly_fields = ('class_id',)
+
+
+class TagInline(admin.TabularInline):
+  model = Tag
+  fields = ['name']
+  show_change_link = True
+  actions = ['delete_selected']
+  extra = 0
+
+@action_with_form(
+  ExportDatasetForm,
+  description="Export dataset",
+)
+def export_action(self, request, queryset, data):
+  format = data['format']
+  include_source_files = data['include_source_files'] == 'yes'
+
+  if len(queryset) > 1:
+    messages.error(request, 'You cant use this action with more than one dataset')
+    return
+  
+  obj: Dataset = queryset.first()
+
+  archive_path = ExportProcessor(ExportProcessor.get_exporter(format)).export_dataset(obj.pk, include_source_files)
+
+  stream_file = open(archive_path, 'rb')
+  original_close = stream_file.close
+
+  def new_close():
+    original_close()
+    os.remove(stream_file.name)
+
+  stream_file.close = new_close
+
+  return FileResponse(stream_file, as_attachment=True)
+
+
+class DatasetAdmin(AdminActionFormsMixin, admin.ModelAdmin):
+  change_form_template = "dataset_change_form.html"
+  form = DatasetAdminForm
+  list_display = ('name',)
+  readonly_fields = ('files_count', 'id')
+  search_fields = ['name'] 
+  inlines = [TagInline]
+  actions = [export_action]
+
+
+  def files_count(self, obj):
+    dataset_repo: DatasetRepository = ServiceLocator.get(DatasetRepository)
+  
+    return dataset_repo.get_files_count(obj)
+  
+  files_count.short_description = 'Files count'
+
+
+  fieldsets = (
+    (None, {
+      'fields': ('name', 'folder_path', 'min_labels_for_file','helper_text', 'data_key', 'files',)
+    }),
+    ('Labeling configuration', {
+      'fields': ('type', 'input_type', 'data_type'),
+      'classes': ('collapse',),
+    }),
+    ('Dataset Info', {
+      'fields': ('id', 'files_count',),
+    }),
+  )
+
+  def save_model(self, request, obj, form, change):
+    uploaded_file = form.cleaned_data.get('files')
+    dataset_repo: DatasetRepository = ServiceLocator.get(DatasetRepository)
+    label_repo: LabelRepository = ServiceLocator.get(LabelRepository)
+
+    if uploaded_file:
+      folder, file_paths = dataset_repo.create_dataset_files(uploaded_file, form.cleaned_data.get('name'), obj.folder_path)
+      obj.folder_path = folder
+    
+    super().save_model(request, obj, form, change)
+
+    if uploaded_file:
+      label_repo.init_dataset_labels(dataset_id=obj.pk, file_paths=file_paths)
+
+
+admin.site.register(Dataset, DatasetAdmin)
+admin.site.register(Tag, TagAdmin)
+
+# 0006_dataset_data_key.py
+# Generated by Django 4.2.12 on 2025-02-26 16:46
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0005_dataset_min_labels_for_file'),
+  ]
+
+  operations = [
+    migrations.AddField(
+      model_name='dataset',
+      name='data_key',
+      field=models.TextField(default=''),
+    ),
+  ]
+
+
+# 0008_alter_dataset_data_key.py
+# Generated by Django 4.2.12 on 2025-02-26 16:48
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0007_alter_dataset_data_key'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='data_key',
+      field=models.CharField(default='', max_length=255),
+    ),
+  ]
+
+
+# 0007_alter_dataset_data_key.py
+# Generated by Django 4.2.12 on 2025-02-26 16:47
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0006_dataset_data_key'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='data_key',
+      field=models.TextField(default='', max_length=255),
+    ),
+  ]
+
+
+# __init__.py
+
+
+# 0004_dataset_folder_path.py
+# Generated by Django 4.2.12 on 2025-02-24 09:54
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0003_alter_dataset_id_alter_tag_id'),
+  ]
+
+  operations = [
+    migrations.AddField(
+      model_name='dataset',
+      name='folder_path',
+      field=models.TextField(default=''),
+    ),
+  ]
+
+
+# 0002_alter_tag_dataset.py
+# Generated by Django 4.2.12 on 2025-02-17 16:48
+
+from django.db import migrations, models
+import django.db.models.deletion
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0001_initial'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='tag',
+      name='dataset',
+      field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='tags', to='rest_api.dataset'),
+    ),
+  ]
+
+
+# 0012_dataset_helper_text.py
+# Generated by Django 5.2 on 2025-04-26 12:20
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0011_rename_date_type_dataset_data_type'),
+  ]
+
+  operations = [
+    migrations.AddField(
+      model_name='dataset',
+      name='helper_text',
+      field=models.CharField(blank=True, default=''),
+    ),
+  ]
+
+
+# 0014_alter_dataset_folder_path.py
+# Generated by Django 5.2 on 2025-05-09 13:46
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0013_alter_dataset_folder_path'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='folder_path',
+      field=models.CharField(default='', max_length=255),
+    ),
+  ]
+
+
+# 0010_dataset_date_type_dataset_input_type_dataset_type.py
+# Generated by Django 5.1.7 on 2025-04-07 17:38
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0009_alter_dataset_data_key'),
+  ]
+
+  operations = [
+    migrations.AddField(
+      model_name='dataset',
+      name='date_type',
+      field=models.CharField(blank=True, choices=[('sound', 'Sound'), ('image', 'Image'), ('string', 'String')], default='', max_length=50, null=True),
+    ),
+    migrations.AddField(
+      model_name='dataset',
+      name='input_type',
+      field=models.CharField(blank=True, choices=[('text', 'Text'), ('one_from_many', 'One From Many'), ('many_from_many', 'Many From Many')], default='', max_length=50, null=True),
+    ),
+    migrations.AddField(
+      model_name='dataset',
+      name='type',
+      field=models.CharField(choices=[('bounding_box', 'Bounding Box'), ('polygons', 'Polygons'), ('word_tagging', 'Word Tagging'), ('custom', 'Custom')], default=('bounding_box', 'Bounding Box'), max_length=50),
+    ),
+  ]
+
+
+# 0015_alter_dataset_folder_path.py
+# Generated by Django 5.2 on 2025-05-09 13:47
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0014_alter_dataset_folder_path'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='folder_path',
+      field=models.CharField(default='', max_length=1024),
+    ),
+  ]
+
+
+# 0016_alter_dataset_folder_path.py
+# Generated by Django 5.2 on 2025-05-11 16:15
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0015_alter_dataset_folder_path'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='folder_path',
+      field=models.CharField(blank=True, default='', max_length=1024),
+    ),
+  ]
+
+
+# 0009_alter_dataset_data_key.py
+# Generated by Django 5.1.7 on 2025-03-26 17:01
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0008_alter_dataset_data_key'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='data_key',
+      field=models.CharField(blank=True, default='', max_length=255),
+    ),
+  ]
+
+
+# 0003_alter_dataset_id_alter_tag_id.py
+# Generated by Django 4.2.12 on 2025-02-21 15:32
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0002_alter_tag_dataset'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='id',
+      field=models.AutoField(editable=False, primary_key=True, serialize=False),
+    ),
+    migrations.AlterField(
+      model_name='tag',
+      name='id',
+      field=models.AutoField(editable=False, primary_key=True, serialize=False),
+    ),
+  ]
+
+
+# 0001_initial.py
+# Generated by Django 4.2.12 on 2025-02-17 16:45
+
+from django.db import migrations, models
+import django.db.models.deletion
+import uuid
+
+
+class Migration(migrations.Migration):
+
+  initial = True
+
+  dependencies = [
+  ]
+
+  operations = [
+    migrations.CreateModel(
+      name='Dataset',
+      fields=[
+        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+        ('name', models.CharField(max_length=255)),
+      ],
+      options={
+        'db_table': 'datasets',
+      },
+    ),
+    migrations.CreateModel(
+      name='Tag',
+      fields=[
+        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+        ('class_id', models.IntegerField()),
+        ('name', models.CharField(max_length=50)),
+        ('dataset', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='dataset', to='rest_api.dataset')),
+      ],
+      options={
+        'db_table': 'tags',
+      },
+    ),
+  ]
+
+
+# 0011_rename_date_type_dataset_data_type.py
+# Generated by Django 5.1.7 on 2025-04-07 17:40
+
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0010_dataset_date_type_dataset_input_type_dataset_type'),
+  ]
+
+  operations = [
+    migrations.RenameField(
+      model_name='dataset',
+      old_name='date_type',
+      new_name='data_type',
+    ),
+  ]
+
+
+# 0005_dataset_min_labels_for_file.py
+# Generated by Django 4.2.12 on 2025-02-24 09:57
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0004_dataset_folder_path'),
+  ]
+
+  operations = [
+    migrations.AddField(
+      model_name='dataset',
+      name='min_labels_for_file',
+      field=models.IntegerField(default=1),
+    ),
+  ]
+
+
+# 0013_alter_dataset_folder_path.py
+# Generated by Django 5.2 on 2025-05-09 13:44
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+  dependencies = [
+    ('rest_api', '0012_dataset_helper_text'),
+  ]
+
+  operations = [
+    migrations.AlterField(
+      model_name='dataset',
+      name='folder_path',
+      field=models.TextField(default='', max_length=255),
+    ),
+  ]
+
+
+# service_locator.py
+class ServiceLocator:
+  _services = {}
+
+  @classmethod
+  def register(cls, service_type, service):
+    cls._services[service_type] = service
+
+  @classmethod
+  def get(cls, service_type):
+    return cls._services.get(service_type)
+
+
+# files_controller.py
+from django.http import FileResponse
+from rest_framework.views import APIView
+
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+
+class FilesController(APIView):
+  def get(self, request):
+    file_path = request.query_params.get("file_path", "")
+
+    return FileResponse(open(file_path, 'rb'))
+
+
+# labels_controller.py
+from django.http import FileResponse, HttpResponse, JsonResponse
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+
+from rest_api.domain.models.dataset import Dataset, TaggingTaskType
+from rest_api.domain.models.label_entry import LabelEntry
+from rest_api.domain.service.read_asset_strategy import AssetReader
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+from rest_api.di.service_locator import ServiceLocator
+
+class LabelsController(APIView):
+  permission_classes = [IsAuthenticated]
+
+  dataset_repository : DatasetRepository = ServiceLocator.get(DatasetRepository)
+  def get(self, request):
+    print('AAAAAAAA')
+    dataset_id = request.query_params.get("dataset_id", 1)
+    user = request.user
+    print(user.id)
+    label_entry : LabelEntry = self.dataset_repository.get_new_task(dataset_id=dataset_id, user_id=user.id)
+    dataset : Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
+    asset_reader : AssetReader = AssetReader(AssetReader.get_data_reader(label_entry.file_path))
+
+    metadata = {}
+    if dataset.type == TaggingTaskType.custom:
+      metadata['input_type'] = dataset.input_type
+      metadata['data_type'] = dataset.data_type
+
+    return JsonResponse({'data': asset_reader.read(label_entry.file_path, 
+                                                       id_in_file=label_entry.id_in_file, 
+                                                       data_key=dataset.data_key), 
+              'type': dataset.type,
+              'filename': label_entry.file_path,
+              'idInFile': label_entry.id_in_file,
+              'metadata': metadata,
+                }
+              )
+  def post(self, request):
+    id_in_file= request.data.get('id_in_file')
+    file_path = request.data.get('file_path')
+    dataset_id = request.data.get('dataset_id')
+    data = request.data.get('data')
+    user_id = request.user.id
+    print(data)
+    print(user_id)
+    self.dataset_repository.submit_task(id_in_file=id_in_file,
+                      user_id=user_id,
+                      file_path=file_path,
+                      dataset_id=dataset_id,
+                      data=data)
+    return HttpResponse()
+
+
+# dataset_controller.py
+from django.http import FileResponse, JsonResponse
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+
+from rest_api.domain.models.dataset import Dataset, Tag
+from rest_api.di.service_locator import ServiceLocator
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+
+class DatasetController(APIView):
+  permission_classes = [IsAuthenticated]
+
+  dataset_repository : DatasetRepository = ServiceLocator.get(DatasetRepository)
+
+  def get(self, request, dataset_id: int):
+    dataset: Dataset = self.dataset_repository.get_dataset_by_id(dataset_id=dataset_id)
+    tags: list[Tag] = Tag.objects.filter(dataset=dataset)
+    return JsonResponse({
+      'id': dataset.id,
+      'name': dataset.name,
+      'tasksType': dataset.type, 
+      'helperText': dataset.helper_text,           
+      'availableLabels': [{'id': e.id, 'name': e.name} for e in tags],
+    })
+
+
+# __init__.py
+
+
+# dataset_files_source.py
+import os
+import zipfile
+import shutil
+from typing import BinaryIO
+
+def _resolveBasePath():
+  RUN_ENV = os.getenv('RUN_ENV', 'local')
+  if RUN_ENV == 'docker':
+    return '/app/local_data/datasets/'
+  else:
+    return "/Users/user/python/label_pro/datasets/"
+
+class DatasetFilesDatasource():
+  _basePath = _resolveBasePath()
+
+  def create_dataset_files(self, file: BinaryIO, dataset_name: str, folder: str) -> tuple[str, list[str]]:
+    print(self._basePath, flush=True)
+    dataset_name = dataset_name.lower().replace(" ", "_")
+    if folder is not None and len(folder) > 0:
+      base_folder = folder
+    else:
+      base_folder = f"{self._basePath}{dataset_name}"
+
+    if os.path.exists(base_folder):
+      shutil.rmtree(base_folder)
+
+    os.makedirs(os.path.dirname(base_folder), exist_ok=True)
+    file_path = base_folder + file.name
+
+    with open(file_path, "wb") as dest:
+      for chunk in file.chunks():
+        dest.write(chunk)
+
+    if zipfile.is_zipfile(file_path):
+      with zipfile.ZipFile(file_path, 'r') as zip_ref:
+        for zip_file in zip_ref.namelist():
+          if zip_file.startswith("__MACOSX/") or os.path.basename(zip_file).startswith("._"):
+            continue
+          zip_ref.extract(zip_file, base_folder)
+          extracted_path = os.path.join(base_folder, zip_file)
+          if os.path.isdir(extracted_path):
+            continue
+          filename = os.path.basename(zip_file).replace(" ", "_")
+          final_path = os.path.join(base_folder, filename)
+          os.rename(extracted_path, final_path)
+    else:
+      raise TypeError('Provide correct zip arcive please')
+    
+    
+    os.remove(file_path)
+    file_paths = []
+    for root, dirs, filenames in os.walk(base_folder, topdown=False):
+      for file in filenames:
+        file_path = os.path.join(root, file)
+        file_paths.append(file_path)
+
+      for directory in dirs:
+        dir_path = os.path.join(root, directory)
+        if not os.listdir(dir_path):
+          shutil.rmtree(dir_path)
+    print(file_paths)
+
+    return base_folder, file_paths
+
+
+  def get_files_count(self, folder: str) -> int:
+    try:
+      base_folder = folder
+      file_count = 0
+      for _, __, files in os.walk(base_folder):
+        file_count += len(files)
+      return file_count
+    except FileNotFoundError:
+      return 0
+
+
+
+# dataset_db_source.py
+from rest_api.domain.models.dataset import Dataset
+
+
+class DatasetDBSource:
+
+  def get_by_id(self, dataset_id : int) -> Dataset:
+    result = Dataset.objects.filter(id=dataset_id).first()
+    return result
+
+
+# __init__.py
+
+
+# labels_mongo_source.py
+from dataclasses import asdict
+import os
+from pymongo import MongoClient
+
+from rest_api.domain.models.label_entry import LabelEntry
+
+mongo_host = os.getenv("MONGO_HOST", "localhost")
+mongo_port = int(os.getenv("MONGO_PORT", 27017))
+
+class LabelsMongoDatasource:
+  def __init__(self):
+    self.client = MongoClient(f"mongodb://{mongo_host}:{mongo_port}")
+    self.db = self.client['label_pro']
+    self.collection = self.db['labels']
+  
+  def create_multiple_labels(self, labels: list[LabelEntry]):
+    self.collection.insert_many([asdict(e) for e in labels])
+
+  def remove_all_dataset_labels(self, dataset_id: int):
+    self.collection = self.db['labels']
+    self.collection.delete_many({'dataset_id': int(dataset_id)})
+
+  def find_dataset_labels(self, dataset_id: int):
+    dataset_id = int(dataset_id)
+    label_entries_db = self.collection.find({'dataset_id': int(dataset_id)})
+
+    label_entries = []
+    for e in label_entries_db:
+      e : dict
+      label_entries.append(LabelEntry.from_dict(e))
+    return label_entries
+  
+  def get_label_entry(self, dataset_id, file_path, id_in_file):
+    result = self.collection.find_one({'dataset_id': int(dataset_id), 'file_path': file_path, 'id_in_file': str(id_in_file)})
+    result : dict
+    return LabelEntry.from_dict(result)
+
+  
+  def update_label_entry(self, label_entry: LabelEntry):
+    self.collection.update_one({'dataset_id': label_entry.dataset_id, 'file_path': label_entry.file_path, 'id_in_file': str(label_entry.id_in_file)}, {'$set': asdict(label_entry)})
+
+
+
+
+# label_repository_impl.py
+from rest_api.domain.service.create_label_entry_strategy import get_data_reader, LabelsCreater
+from rest_api.data.datasource.labels_mongo_source import LabelsMongoDatasource
+from rest_api.domain.models.label_entry import LabelEntry
+from rest_api.domain.repository.label_repository import LabelRepository
+
+
+
+class LabelRepositoryImpl(LabelRepository):
+  def __init__(self, mongo_source : LabelsMongoDatasource):
+    self.labels_mongo_source = mongo_source
+       
+
+  def init_dataset_labels(self, dataset_id: int, file_paths: list[str]):
+    labels = []
+    for file in file_paths:
+      strategy = get_data_reader(file)
+      labels_creater : LabelsCreater = LabelsCreater(strategy)
+      result : list[LabelEntry] = labels_creater.process(file_path=file)
+      full_result = [LabelEntry(dataset_id=dataset_id, file_path=e.file_path, id_in_file=e.id_in_file, labels=[]) for e in result]
+      labels.extend(full_result)
+      
+    self.labels_mongo_source.remove_all_dataset_labels(dataset_id=dataset_id)
+    self.labels_mongo_source.create_multiple_labels(labels=labels)
+
+    
+
+    
+
+# __init__.py
+
+
+# dataset_repository_impl.py
+
+
+import random
+from typing import BinaryIO
+
+from django.http import Http404
+from rest_api.domain.models.label_entry import Label, LabelEntry
+from rest_api.data.datasource.labels_mongo_source import LabelsMongoDatasource
+from rest_api.data.datasource.dataset_db_source import DatasetDBSource
+from rest_api.data.datasource.dataset_files_source import DatasetFilesDatasource
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+from rest_api.domain.models.dataset import Dataset
+
+class DatasetRepositoryImpl(DatasetRepository):
+  def __init__(self, files_source, dataset_db_source, labels_mongo_source):
+    self.files_source : DatasetFilesDatasource = files_source
+    self.dataset_db_source : DatasetDBSource = dataset_db_source
+    self.labels_mongo_source : LabelsMongoDatasource = labels_mongo_source
+
+  def create_dataset_files(self, file: BinaryIO, dataset_name: str, folder: str) -> tuple[str, list[str]]:
+    return self.files_source.create_dataset_files(file, dataset_name=dataset_name, folder=folder)
+
+  def get_files_count(self, dataset: Dataset) -> int:
+    return self.files_source.get_files_count(folder=dataset.folder_path)
+  
+  def get_dataset_by_id(self, dataset_id: int):
+    return self.dataset_db_source.get_by_id(dataset_id)
+  
+  def get_dataset_labels(self, dataset_id: int) -> list[LabelEntry]:
+    return self.labels_mongo_source.find_dataset_labels(dataset_id)
+  
+  def get_new_task(self, dataset_id: int, user_id: int):
+    dataset = self.dataset_db_source.get_by_id(dataset_id)
+
+    label_entries = self.labels_mongo_source.find_dataset_labels(dataset_id=dataset_id)
+    label_entries : list[LabelEntry]
+
+    filtered_entries = []
+
+    for label_entry in label_entries:
+      user_tagged = False
+      for label in label_entry.labels:
+        if label.status == 'pending' and label.user_id == user_id:
+          return label_entry
+        if label.user_id == user_id:
+          user_tagged = True
+          break
+      if not user_tagged:
+        filtered_entries.append(label_entry)
+        
+    if len(filtered_entries) == 0:
+      raise Http404()
+    
+    result_entry : LabelEntry = random.choice(filtered_entries)
+    labels = result_entry.labels
+    labels.append(Label(user_id=user_id, status='pending', data={}))
+
+    pending_entry = LabelEntry(id_in_file=result_entry.id_in_file, dataset_id=result_entry.dataset_id, file_path=result_entry.file_path, labels=labels)
+    self.labels_mongo_source.update_label_entry(pending_entry)
+    
+    return result_entry
+  
+  def submit_task(self, id_in_file: int, dataset_id: int, user_id: int, file_path: str, data: dict):
+    label_entry : LabelEntry = self.labels_mongo_source.get_label_entry(id_in_file=id_in_file, dataset_id=dataset_id, file_path=file_path)
+    for i, _ in enumerate(label_entry.labels):
+      label : Label = label_entry.labels[i]
+      if label.status == 'pending' and label.user_id == user_id:
+        label_entry.labels[i] = Label(user_id=user_id, status='completed', data=data)
+        break
+    self.labels_mongo_source.update_label_entry(label_entry=label_entry)
+    
+  
+
+# __init__.py
+
+
+# __init__.py
+
+
+# dataset_repository.py
+from abc import ABC, abstractmethod
+from typing import BinaryIO
+
+from rest_api.domain.models.dataset import Dataset
+from rest_api.domain.models.label_entry import LabelEntry
+
+class DatasetRepository(ABC):
+  @abstractmethod
+  def create_dataset_files(self, file: BinaryIO, dataset_name: str, folder: str) -> tuple[str, list[str]]:
+    pass
+
+  @abstractmethod
+  def get_dataset_labels(self, dataset_id: int) -> list[LabelEntry]:
+    pass
+
+  @abstractmethod
+  def get_files_count(self, dataset: Dataset) -> int:
+    pass
+
+  @abstractmethod
+  def get_new_task(self, dataset_id: int, user_id: int):
+    pass
+
+  @abstractmethod
+  def submit_task(self, id_in_file: int, dataset_id: int, user_id: int, file_path: str, data: dict):
+    pass
+
+  @abstractmethod
+  def get_dataset_by_id(self, dataset_id: int):
+    pass
+
+
+# label_repository.py
+from abc import ABC, abstractmethod
+
+
+class LabelRepository(ABC):
+
+  @abstractmethod
+  def init_dataset_labels(self, dataset_id: int, file_paths: list[str]):
+    pass
+
+# label_entry.py
+import json
+from dataclasses import dataclass
+from typing import List, Dict
+
+@dataclass
+class Label:
+  user_id: int
+  status: str
+  data: dict
+
+  def __post_init__(self):
+    if isinstance(self.data, str):
+      self.data = json.loads(self.data)
+
+@dataclass
+class LabelEntry:
+  dataset_id: int
+  file_path: str
+  id_in_file: str
+  labels: List[Label]
+
+  @staticmethod
+  def from_dict(data: Dict):
+    labels = [Label(**label) for label in data['labels']]
+    return LabelEntry(
+      dataset_id=data['dataset_id'],
+      file_path=data['file_path'],
+      id_in_file=data['id_in_file'],
+      labels=labels
+    )
+          
+  
+
+# dataset.py
+from django.db import models
+
+class TaggingTaskType(models.TextChoices):
+  bounding_box = 'bounding_box', 
+  polygons = 'polygons',
+  word_tagging = 'word_tagging',
+  custom = 'custom',
+
+
+class CustomInputType(models.TextChoices):
+  text = 'text',
+  one_from_many = 'one_from_many',
+  many_from_many = 'many_from_many'
+
+class CustomDataType(models.TextChoices):
+  sound = 'sound',
+  image = 'image',
+  string = 'string'
+
+
+class Dataset(models.Model):
+  name = models.CharField(max_length=255)
+  id = models.AutoField(primary_key=True, editable=False)
+  folder_path = models.CharField(default='', max_length=1024, blank=True)
+  min_labels_for_file = models.IntegerField(default=1)
+  data_key = models.CharField(default='', max_length=255, blank=True)
+  helper_text = models.CharField(default='', blank=True)
+
+  type = models.CharField(
+    max_length=50,
+    choices=TaggingTaskType.choices,
+    default=TaggingTaskType.choices[0]
+  )
+
+  input_type = models.CharField(
+    max_length=50,
+    choices=CustomInputType.choices,
+    default='',
+    blank=True,
+    null=True,
+  )
+
+  data_type = models.CharField(
+    max_length=50,
+    choices=CustomDataType.choices,
+    default='',
+    blank=True,
+    null=True,
+  )
+
+  def __str__(self):
+    return str(self.name)
+
+  class Meta:
+    db_table = "datasets"
+
+
+class Tag(models.Model):
+  name = models.CharField(max_length=50, blank=False)
+  id = models.AutoField(primary_key=True, editable=False)
+  class_id = models.IntegerField()
+  dataset = models.ForeignKey(Dataset, related_name='tags', on_delete=models.CASCADE)
+
+
+  def save(self, *args, **kwargs):
+    if not self.class_id:
+      last_class_id = Tag.objects.filter(dataset=self.dataset).aggregate(models.Max('class_id'))['class_id__max']
+      self.class_id = (last_class_id or 0) + 1
+    super().save(*args, **kwargs)
+
+  def __str__(self):
+    return str(self.name)
+
+  class Meta:
+    db_table = "tags"
+
+
+
+#  __init__.py
+
+
+# export_dataset_strategy.py
+from abc import ABC, abstractmethod
+from datetime import datetime
+import json
+import os
+from PIL import Image
+from typing import ChainMap
+import zipfile
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+
+from django.conf import settings
+
+from rest_api.di.service_locator import ServiceLocator
+from rest_api.domain.models.dataset import Dataset, Tag, TaggingTaskType
+from rest_api.domain.models.label_entry import Label, LabelEntry
+from rest_api.domain.repository.dataset_repository import DatasetRepository
+
+class ExportDatasetStrategy(ABC):
+  @abstractmethod
+  def export_dataset(self, dataset_id: int, include_source: bool) -> str:
+    pass
+
+
+class JSONLExportProcessor(ExportDatasetStrategy):
+  def __init__(self, dataset_repo: DatasetRepository):
+    self.dataset_repository = dataset_repo
+
+  def export_dataset(self, dataset_id: int, include_source: bool) -> str:
+    dataset: Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    temp_dir = os.path.join(settings.BASE_DIR, 'tmp')
+    os.makedirs(temp_dir, exist_ok=True)
+
+    filename = f'{dataset.name}_jsonl_{timestamp}.zip'
+    file_path = os.path.join(temp_dir, filename)
+
+    with zipfile.ZipFile(file_path, 'w') as zipf:
+      with zipf.open('dataset.jsonl', mode='w') as file_in_zip:
+        label_entries : list[LabelEntry] = self.dataset_repository.get_dataset_labels(dataset_id)
+        for entry in label_entries:
+          data = {}
+          data['file_path'] = os.path.basename(entry.file_path)
+          data['id_in_file'] = entry.id_in_file
+          label: Label | None = entry.labels[0] if entry.labels else None
+          if label is not None:
+            print(label.data)
+            print(type(label.data))
+            test = label.data
+            data = {**data, **test}
+          file_in_zip.write((json.dumps(data, ensure_ascii=False) + '\n').encode('utf-8'))  
+    return file_path
+
+
+
+class PascalExportProcessor(ExportDatasetStrategy):
+  def __init__(self, dataset_repo: DatasetRepository):
+    self.dataset_repository = dataset_repo
+
+  def export_dataset(self, dataset_id: int, include_source: bool) -> str:
+    dataset: Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tags: list[Tag] = dataset.tags.all()
+
+    temp_dir = os.path.join(settings.BASE_DIR, 'tmp')
+    os.makedirs(temp_dir, exist_ok=True)
+
+    filename = f'{dataset.name}_pascalvoc_{timestamp}.zip'
+    file_path = os.path.join(temp_dir, filename)
+
+    with zipfile.ZipFile(file_path, 'w') as zipf:
+      label_entries : list[LabelEntry] = self.dataset_repository.get_dataset_labels(dataset_id)
+      for entry in label_entries:
+        abs_path = entry.file_path
+        arcname = os.path.join('images', os.path.basename(abs_path))
+        zipf.write(abs_path, arcname=arcname)
+
+        filename_wo_ext = os.path.splitext(os.path.basename(abs_path))[0]
+        arcname = os.path.join('annotations', filename_wo_ext + '.xml')
+        with Image.open(abs_path) as img:
+          img_width, img_height = img.size
+        label: Label | None = entry.labels[0] if entry.labels else None
+
+        root = ET.Element("annotation")
+        folder = ET.SubElement(root, 'folder')
+        folder.text = 'images'
+
+        filename = ET.SubElement(root, 'filename')
+        filename.text = os.path.basename(abs_path)
+
+        size = ET.SubElement(root, "size")
+        width = ET.SubElement(size, "width")
+        width.text = str(img_width)
+        height = ET.SubElement(size, "height")
+        height.text = str(img_height)
+
+        if label is not None and len(label.data.keys()) > 0:
+          boxes = label.data['boxes']
+          for box_dict in boxes:
+            box = box_dict['box']
+            left = box['left']
+            top = box['top']
+            right = box['right']
+            bottom = box['bottom']
+
+            label_id = box_dict['label']['id']
+            label_name = None
+
+            for tag in tags:
+              if label_id == tag.pk:
+                label_name = tag.name
+                break
+            if label_name is not None:
+              obj = ET.SubElement(root, 'object')
+              name = ET.SubElement(obj, 'name')
+              name.text = label_name
+              bndbox = ET.SubElement(obj, 'bndbox')
+              xmin = ET.SubElement(bndbox, 'xmin')
+              xmin.text = str(left)
+              ymin = ET.SubElement(bndbox, 'ymin')
+              ymin.text = str(top)
+              xmax = ET.SubElement(bndbox, 'xmax')
+              xmax.text = str(right)
+              ymax = ET.SubElement(bndbox, 'ymax')
+              ymax.text = str(bottom)
+
+        xml_str = ET.tostring(root, encoding="unicode", method="xml")
+        xml_pretty_str = minidom.parseString(xml_str).toprettyxml(indent="  ")
+        zipf.writestr(arcname, xml_pretty_str)
+    return file_path                 
+                  
+
+class YOLOExportProcessor(ExportDatasetStrategy):
+  def __init__(self, dataset_repo: DatasetRepository):
+    self.dataset_repository = dataset_repo
+
+  def export_dataset(self, dataset_id: int, include_source: bool) -> str:
+    dataset: Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tags: list[Tag] = dataset.tags.all()
+
+
+    temp_dir = os.path.join(settings.BASE_DIR, 'tmp')
+    os.makedirs(temp_dir, exist_ok=True)
+
+    filename = f'{dataset.name}_yolo_{timestamp}.zip'
+    file_path = os.path.join(temp_dir, filename)
+
+    with zipfile.ZipFile(file_path, 'w') as zipf:
+      classes_str = ''
+      for tag in tags:
+        classes_str += tag.name + '\n'
+      zipf.writestr('classess.txt', classes_str)
+      
+      label_entries : list[LabelEntry] = self.dataset_repository.get_dataset_labels(dataset_id)
+      for entry in label_entries:
+        abs_path = entry.file_path
+        arcname = os.path.join('data', os.path.basename(abs_path))
+        zipf.write(abs_path, arcname=arcname)
+
+        filename_wo_ext = os.path.splitext(os.path.basename(abs_path))[0]
+        arcname = os.path.join('labels', filename_wo_ext + '.txt')
+        with Image.open(abs_path) as img:
+          img_width, img_height = img.size
+        label: Label | None = entry.labels[0] if entry.labels else None
+        label_str = ''
+        if label is not None and len(label.data.keys()) > 0:
+          boxes = label.data['boxes']
+          for box_dict in boxes:
+            box = box_dict['box']
+            left = box['left']
+            top = box['top']
+            right = box['right']
+            bottom = box['bottom']
+
+            center_x = (left + right) / 2
+            center_y = (top + bottom) / 2
+            width = abs(right - left)
+            height = abs(top - bottom)
+
+            label_id = box_dict['label']['id']
+            label_index = None
+
+            for i, tag in enumerate(tags):
+              if tag.pk == label_id:
+                label_index = i
+                break
+            if label_index != None:
+              label_str += f'{label_index} {center_x / img_width} {center_y / img_height} {width / img_width} {height / img_height}'
+        zipf.writestr(arcname, label_str)
+    return file_path
+
+
+
+class COCOExportProcessor(ExportDatasetStrategy):
+  def __init__(self, dataset_repo: DatasetRepository):
+    self.dataset_repository = dataset_repo
+
+  def export_dataset(self, dataset_id: int, include_source: bool) -> str:
+    dataset: Dataset = self.dataset_repository.get_dataset_by_id(dataset_id)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tags: list[Tag] = dataset.tags.all()
+
+    temp_dir = os.path.join(settings.BASE_DIR, 'tmp')
+    os.makedirs(temp_dir, exist_ok=True)
+
+    filename = f'{dataset.name}_coco_{timestamp}.zip'
+    file_path = os.path.join(temp_dir, filename)
+
+    with zipfile.ZipFile(file_path, 'w') as zipf:
+      label_entries : list[LabelEntry] = self.dataset_repository.get_dataset_labels(dataset_id)
+      dataset_dict = {}
+      dataset_dict['categories'] = []
+      dataset_dict['annotations'] = []
+      dataset_dict['images'] = []
+      for i, tag in enumerate(tags):
+        dataset_dict['categories'].append({
+          'id': i,
+          'name': tag.name,
+        })
+        
+      for i, entry in enumerate(label_entries):
+        abs_path = entry.file_path
+        zipf.write(abs_path, arcname=os.path.basename(abs_path))
+        with Image.open(abs_path) as img:
+          img_width, img_height = img.size
+        dataset_dict['images'].append({
+          'image_id': i,
+          'file_name': os.path.basename(abs_path),
+          'width': img_width,
+          'height': img_height,
+        })
+
+        label: Label | None = entry.labels[0] if entry.labels else None
+        if label is not None and len(label.data.keys()) > 0:
+          if dataset.type == TaggingTaskType.bounding_box:
+            boxes = label.data['boxes']
+            for box_dict in boxes:
+              annotation = {}
+
+              box = box_dict['box']
+              left = box['left']
+              top = box['top']
+              right = box['right']
+              bottom = box['bottom']
+
+              width = abs(right - left)
+              height = abs(top - bottom)
+
+              label_id = box_dict['label']['id']
+              label_index = None
+
+              for tag_index, tag in enumerate(tags):
+                if tag.pk == label_id:
+                  label_index = tag_index
+                  break
+
+              if label_index is not None:
+                annotation['image_id'] = i
+                annotation['category_id'] = label_index
+                annotation['bbox'] = [left, top, width, height]
+                dataset_dict['annotations'].append(annotation)
+              
+          elif dataset.type == TaggingTaskType.polygons:
+            polygons = label.data['polygons']
+            for poly_dict in polygons:
+              annotation = {}
+              points_dicts = poly_dict['points']
+              points = []
+              for point_dict in points_dicts:
+                points.append(point_dict['x'])
+                points.append(point_dict['y'])
+
+              label_id = poly_dict['label']['id']
+              label_index = None
+
+              for tag_index, tag in enumerate(tags):
+                if tag.pk == label_id:
+                  label_index = tag_index
+                  break
+
+              if label_index is not None:
+                annotation['image_id'] = i
+                annotation['category_id'] = label_index
+                annotation['poly'] = points
+                dataset_dict['annotations'].append(annotation)
+      zipf.writestr('dataset.json', json.dumps(dataset_dict,indent=4, ensure_ascii=False))
+    return file_path
+
+class ExportProcessor():
+  def __init__(self, strategy: ExportDatasetStrategy):
+    self.strategy = strategy
+
+  def export_dataset(self, dataset_id: int, include_source: bool):
+    return self.strategy.export_dataset(dataset_id, include_source=include_source)
+  
+  @staticmethod
+  def get_exporter(export_format: str) -> ExportDatasetStrategy:
+    dataset_repo = ServiceLocator.get(DatasetRepository)
+
+    if export_format == 'yolo':
+      return YOLOExportProcessor(dataset_repo)
+    elif export_format == 'coco':
+      return COCOExportProcessor(dataset_repo)
+    elif export_format == 'pascalvoc':
+      return PascalExportProcessor(dataset_repo)
+    else:
+      return JSONLExportProcessor(dataset_repo)
+  
+
+
+# create_label_entry_strategy.py
+from abc import ABC, abstractmethod
+import csv
+
+
+from rest_api.domain.models.label_entry import LabelEntry
+
+class CreateLabelEntryStrategy(ABC):
+  @abstractmethod
+  def get_entries(self, file_path: str) -> list[LabelEntry]:
+    pass
+
+class CreateFromCSV(CreateLabelEntryStrategy):
+  def get_entries(self, file_path: str) -> list[LabelEntry]:
+    entries = []
+    with open(file_path, "r", encoding="utf-8") as f:
+      reader = csv.DictReader(f)
+      print(file_path)
+      for i, _ in enumerate(reader, start=1):
+        entries.append(LabelEntry(id_in_file=str(i), file_path=file_path, dataset_id=1, labels=[]))
+    return entries
+
+
+
+class CreateFromJSONL(CreateLabelEntryStrategy):
+  def get_entries(self, file_path: str) -> list[LabelEntry]:
+    entries = []
+    with open(file_path, "r", encoding="utf-8") as f:
+      for i, _ in enumerate(f, start=1):
+        entries.append(LabelEntry(id_in_file=str(i), file_path=file_path, dataset_id=1, labels=[]))
+  
+class CreateFromTXT(CreateLabelEntryStrategy):
+  def get_entries(self, file_path: str) -> list[LabelEntry]:
+    entries = []
+    with open(file_path, "r", encoding="utf-8") as f:
+      for i, _ in enumerate(f, start=1):
+        entries.append(LabelEntry(id_in_file=str(i), file_path=file_path, dataset_id=1, labels=[]))
+    return entries
+  
+class CreateFromFile(CreateLabelEntryStrategy):
+  def get_entries(self, file_path: str) -> list[LabelEntry]:
+    return [LabelEntry(id_in_file='none', dataset_id=1, file_path=file_path, labels=[])]
+
+class LabelsCreater:
+  def __init__(self, strategy: CreateLabelEntryStrategy):
+    self.strategy = strategy
+
+  def process(self, file_path: str):
+    return self.strategy.get_entries(file_path)
+  
+
+def get_data_reader(file_path: str) -> CreateLabelEntryStrategy:
+  extension = file_path.split('.')[-1]
+  if extension == 'csv':
+    return CreateFromCSV()
+  elif extension == 'jsonl':
+    return CreateFromJSONL()
+  elif extension == 'txt':
+    return CreateFromTXT()
+  else:
+    return CreateFromFile()
+
+
+
+# __init__.py
+
+
+# read_asset_strategy.py
+from abc import ABC, abstractmethod
+import csv
+import json
+
+class ReadAssetStrategy(ABC):
+  @abstractmethod
+  def get_data(self, file_name: str, id_in_file: str, data_key):
+    pass
+
+class CSVDataReader(ReadAssetStrategy):
+  def get_data(self, file_name: str, id_in_file: str, data_key):
+    with open(file_name, 'r', encoding='utf-8') as f:
+      reader = csv.DictReader(f)
+      for current_line, row in enumerate(reader, start=1):
+        if current_line == int(id_in_file):
+          return row[data_key]
+
+class JSONDataReader(ReadAssetStrategy):
+  def get_data(self, file_name: str, id_in_file: str, data_key):
+    with open(file_name, 'r', encoding='utf-8') as f:
+      for current_line, line in enumerate(f, start=1):
+        if current_line == int(id_in_file):
+          json_data = json.loads(line.strip())
+          return json_data.get(data_key, None)
+    return None
+  
+class TXTDataReader(ReadAssetStrategy):
+  def get_data(self, file_name: str, id_in_file: str, data_key=None):
+    with open(file_name, 'r', encoding='utf-8') as f:
+      for current_line, line in enumerate(f, start=1):
+        if current_line == int(id_in_file):
+          return line.strip()
+    return None
+  
+class FileDataReader(ReadAssetStrategy):
+  def get_data(self, file_name: str, id_in_file: str, data_key):
+    return file_name
+
+class AssetReader:
+  def __init__(self, strategy: ReadAssetStrategy):
+    self.strategy = strategy
+
+  def read(self, file_name: str, id_in_file: str, data_key):
+    return self.strategy.get_data(file_name, id_in_file, data_key)
+  
+  @staticmethod
+  def get_data_reader(file_name: str) -> ReadAssetStrategy:
+    extension = file_name.split('.')[-1]
+    if extension == 'csv':
+      return CSVDataReader()
+    elif extension == 'jsonl':
+      return JSONDataReader()
+    elif extension == 'txt':
+      return TXTDataReader()
+    else:
+      return FileDataReader()
+
+
+
+# Dockerfile
+
+# Базовый образ
+FROM python:3.11-slim
+
+# Переменные окружения
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+ENV RUN_ENV=docker
+
+# Установка рабочих директорий
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    gcc \
+    python3-dev \
+    build-essential \
+    libjpeg-dev \
+    zlib1g-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt && pip install gunicorn
+
+# Копирование проекта
+COPY . .
+
+# Указание пути к статике
+ENV DJANGO_SETTINGS_MODULE=label_pro.settings
+
+# Сборка статики
+RUN python manage.py collectstatic --noinput
+
+RUN mkdir -p /app/local_data/
+
+RUN chmod +x /app/docker_entrypoint.sh
+
+# Открываем порт
+EXPOSE 8000
+
+ENTRYPOINT ["/app/docker_entrypoint.sh"]
+# Запуск Gunicorn
+CMD ["gunicorn", "label_pro.wsgi:application", "--bind", "0.0.0.0:8000"]
+
+
+# docker-compose.yml
+
+version: "3.9"
+
+services:
+  web:
+    build: .
+    container_name: label_pro_back
+    command: gunicorn label_pro.wsgi:application --bind 0.0.0.0:8000
+    volumes:
+      - ./local_data:/app/local_data
+    ports:
+      - "8000:8000"
+    environment:
+      - RUN_ENV=docker
+      - MONGO_HOST=mongo
+      - MONGO_PORT=27017
+      - DJANGO_SUPERUSER_USERNAME=admin
+      - DJANGO_SUPERUSER_PASSWORD=admin_password
+      - DJANGO_SUPERUSER_EMAIL=django_admin@django.com
+    depends_on:
+      - migrations
+      - mongo
+
+  migrations:
+    build: .
+    command: python manage.py migrate
+    volumes:
+      - ./local_data:/app/local_data
+    environment:
+      - RUN_ENV=migrations
+      - MONGO_HOST=mongo
+      - MONGO_PORT=27017
+      - DJANGO_SUPERUSER_USERNAME=admin
+      - DJANGO_SUPERUSER_PASSWORD=admin_password
+      - DJANGO_SUPERUSER_EMAIL=django_admin@django.com
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:6
+    container_name: mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./local_data/mongo_db:/data/db
